@@ -11,6 +11,12 @@ conda create --name sleep python=3.11.10 dlib=19.24.0 -c conda-forge
 conda activate sleep
 pip install -r requirements.txt
 ```
+
+## run
+```
+python main.py
+```
+
 ## How to compile
 ```
 bash compile.sh

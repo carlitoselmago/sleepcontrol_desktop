@@ -4,8 +4,9 @@ from sleep_control import SleepControl
 
 # Configuration
 config = {
-    "interval": 0.1,  # Seconds between captures
-    "output_dir": "photos"
+    "interval": 0.3,  # Seconds between captures
+    "output_dir": "photos",
+    "resolution": "1920x1080"
 }
 
 # Initialize webcam service
@@ -28,5 +29,5 @@ start_capturing()
 eel.init("web")
 
 # Start the GUI and keep Eel running
-eel.start("index.html", size=(600, 400), block=True,mode='chrome-app')
+eel.start("index.html", size=(300,300), block=True,mode='chrome')
 stop_capturing()
