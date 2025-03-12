@@ -8,9 +8,19 @@
 </head>
 <body>
     <h1>Sleep Control App</h1>
-    <button onclick="startCapturing()">Start</button>
-    <button onclick="stopCapturing()">Stop</button>
-    <p id="status">Status: Idle</p>
+  
+    <style>
+        html,body{
+            background-color:#293133;
+            height: 100%;
+            color:white;
+            font-family: 'Courier New', Courier, monospace;
+            overflow: hidden;
+        }
+        h1{
+            font-size: 14px;
+        }
+    </style>
 
     <script>
         function startCapturing() {
