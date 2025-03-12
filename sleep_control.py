@@ -24,6 +24,7 @@ class SleepControl:
         self.detector = dlib.get_frontal_face_detector()
         self.predictor = dlib.shape_predictor(predictor_path)
         self.queue = np.zeros(30, dtype=int).tolist()
+        self.running = False
         self._create_output_dir()
 
     def _create_output_dir(self) -> None:
@@ -60,9 +61,6 @@ class SleepControl:
         
         self.queue = self.queue[1:] + [flag]
         if sum(self.queue) > len(self.queue) / 2:
-            # actual time-based sleep detected
-            #self._write_log("WARNING: Possible sleep detected!")
-
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = os.path.join(self.output_dir, f"webcam_{timestamp}.jpg")
             cv2.imwrite(filename, frame)
@@ -79,17 +77,15 @@ class SleepControl:
         if not cap.isOpened():
             self._write_log(f"Failed to open camera ID {self.camera_id}")
             return
+        self.running = True
         try:
-            while True:
+            while self.running:
                 ret, frame = cap.read()
                 if not ret:
                     self._write_log(f"Failed to capture from camera ID {self.camera_id}")
                     continue
                 
-                if self.detect_sleep(frame):
-                    # instant detection, it might be a blink
-                    #self._write_log("Drowsiness detected!")
-                    pass
+                self.detect_sleep(frame)
                 
                 if SHOW_WINDOW:
                     cv2.imshow("Capture", frame)
@@ -97,11 +93,13 @@ class SleepControl:
                 
                 time.sleep(self.interval)
         
-        except KeyboardInterrupt:
-            self._write_log("Service stopped by user")
         except Exception as e:
             self._write_log(f"Unexpected error: {str(e)}")
         finally:
             cap.release()
             if SHOW_WINDOW:
                 cv2.destroyAllWindows()
+
+    def stop_capturing(self):
+        self.running = False
+        self._write_log("Service stopped")

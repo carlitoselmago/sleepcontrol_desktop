@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sleep Control</title>
+    <script type="text/javascript" src="/eel.js"></script>
+</head>
+<body>
+    <h1>Sleep Control App</h1>
+    <button onclick="startCapturing()">Start</button>
+    <button onclick="stopCapturing()">Stop</button>
+    <p id="status">Status: Idle</p>
+
+    <script>
+        function startCapturing() {
+            eel.start_capturing();
+            document.getElementById("status").innerText = "Status: Running...";
+        }
+        function stopCapturing() {
+            eel.stop_capturing();
+            document.getElementById("status").innerText = "Status: Stopped";
+        }
+        eel.expose(update_status);
+        function update_status(msg) {
+            document.getElementById("status").innerText = "Status: " + msg;
+        }
+    </script>
+</body>
+</html>
