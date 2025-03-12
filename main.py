@@ -3,7 +3,7 @@ from sleep_control import SleepControl
 if __name__ == "__main__":
     # Configuration
     config = {
-        "interval": 5,          # Seconds between captures
+        "interval": 0.1,          # Seconds between captures
         "output_dir": "photos"
     }
 
