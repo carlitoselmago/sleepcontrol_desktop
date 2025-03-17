@@ -7,7 +7,8 @@ config = {
     "interval": 0.3,  # Seconds between captures
     "threshold": 0.25,
     "output_dir": "photos",
-    "resolution": "1920x1080"
+    "resolution": "1920x1080",
+    "sleepsum": 30
 }
 
 # Initialize webcam service
