@@ -30,5 +30,5 @@ start_capturing()
 eel.init("web")
 
 # Start the GUI and keep Eel running
-eel.start("index.html", size=(300,300), block=True,mode='chrome')
+eel.start("index.html", size=(300,300), block=True,mode='firefox')
 stop_capturing()

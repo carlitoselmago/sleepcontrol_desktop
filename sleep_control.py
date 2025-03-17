@@ -33,6 +33,7 @@ class SleepControl:
         self.running = False
         self._create_output_dir()
         self.scale_factor = 0.5  # For optimized face detection
+        self.judges = []
 
     def _create_output_dir(self) -> None:
         os.makedirs(self.output_dir, exist_ok=True)
@@ -51,6 +52,7 @@ class SleepControl:
         Thread(target=save, daemon=True).start()
 
     def detect_sleep(self, frame) -> bool:
+
         # Optimized face detection on smaller frame
         small_frame = cv2.resize(frame, (0, 0), fx=self.scale_factor, fy=self.scale_factor)
         gray_small = cv2.cvtColor(small_frame, cv2.COLOR_BGR2GRAY)
@@ -89,11 +91,17 @@ class SleepControl:
 
         # Store the last 30 flags in a list
         self.flags.append(flag)
+        self.judges.append(d_judge)
         if len(self.flags) > self.sleepsum:
             self.flags.pop(0)
+            self.judges.pop(0)
 
         # Check if the majority of the last 30 frames indicate sleep
-        if sum(self.flags) > len(self.flags) / 2 and flag == 1:
+        #change to mean value
+        judge_mean = np.mean(self.judges)
+        print("judge mean",judge_mean)
+        if judge_mean < self.threshold:
+        #if sum(self.flags) > len(self.flags) / 2 and flag == 1:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = os.path.join(self.output_dir, f"webcam_{timestamp}.jpg")
             print("Save image")
