@@ -5,6 +5,7 @@ from sleep_control import SleepControl
 # Configuration
 config = {
     "interval": 0.3,  # Seconds between captures
+    "threshold": 0.25,
     "output_dir": "photos",
     "resolution": "1920x1080"
 }
