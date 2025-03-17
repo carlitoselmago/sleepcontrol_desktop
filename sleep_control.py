@@ -13,8 +13,8 @@ class SleepControl:
         self,
         interval: float = 0.1,  # 0.1 second interval
         camera_id: int = 0,
-        threshold: float 0.25, # cantidad de ojo cerrado de 0 a 1
-        sleepsum: int 3, # cantidad de frames en los que se cumple la condicion de threshold
+        threshold: float = 0.25, # cantidad de ojo cerrado de 0 a 1
+        sleepsum: int = 3, # cantidad de frames en los que se cumple la condicion de threshold
         output_dir: str = "photos",
         resolution: str= "640x480",
         log_file: str = "webcam.log",
