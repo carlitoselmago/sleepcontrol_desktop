@@ -13,6 +13,8 @@ class SleepControl:
         self,
         interval: float = 0.1,  # 0.1 second interval
         camera_id: int = 0,
+        threshold: 0.25, # cantidad de ojo cerrado de 0 a 1
+        sleepsum: 3, # cantidad de frames en los que se cumple la condicion de threshold
         output_dir: str = "photos",
         resolution: str= "640x480",
         log_file: str = "webcam.log",
@@ -20,6 +22,8 @@ class SleepControl:
     ):
         self.interval = interval
         self.camera_id = camera_id
+        self.sleepsum = sleepsum
+        self.threshold = threshold
         self.output_dir = output_dir
         self.log_file = log_file
         self.resolution = resolution
@@ -81,11 +85,11 @@ class SleepControl:
         d_reference = (d5 + d6) / 2
         d_judge = d_mean / d_reference
 
-        flag = int(d_judge < 0.25)  # Threshold for closed eyes
+        flag = int(d_judge < self.threshold)  # Threshold for closed eyes
 
         # Store the last 30 flags in a list
         self.flags.append(flag)
-        if len(self.flags) > 3:
+        if len(self.flags) > self.sleepsum:
             self.flags.pop(0)
 
         # Check if the majority of the last 30 frames indicate sleep
