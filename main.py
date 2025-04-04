@@ -1,35 +1,77 @@
 import eel
 import threading
+import os
 from sleep_control import SleepControl
+from time import sleep
+import cv2
 
 # Configuration
 config = {
-    "interval": 0.3,  # Seconds between captures
+    "interval": 0.3,
     "threshold": 0.25,
-    "output_dir": "photos",
-    "resolution": "1920x1080",
-    "sleepsum": 30
+    "output_dir": "recordings",
+    "resolution": "1280x720",  # Reduced resolution for testing
+    "sleepsum": 30,
+    "camera_id": 0,  # Try different indices if needed
 }
+
+def check_camera_access():
+    """Check if camera is accessible"""
+    
+    cap = cv2.VideoCapture(config["camera_id"])
+    sleep(1)
+    if cap.isOpened():
+        cap.release()
+        return True
+    return False
+    
+
+if not check_camera_access():
+    print("⚠️ Camera not accessible. Trying alternative solutions...")
+    
+    # Try common alternative camera indices
+    for i in range(0, 4):
+        config["camera_id"] = i
+        if check_camera_access():
+            print(f"✅ Found working camera at index {i}")
+            break
+    else:
+        print("❌ No working camera found. Please check your camera connection.")
+        exit(1)
 
 # Initialize webcam service
 webcam_service = SleepControl(**config)
 
-# Function to start capturing in a separate thread
-
 def start_capturing():
     if not webcam_service.running:
-        thread = threading.Thread(target=webcam_service.start_capturing, daemon=True)
+        thread = threading.Thread(
+            target=webcam_service.start_capturing,
+            daemon=True,
+            name="WebcamCaptureThread"
+        )
         thread.start()
-
+        print("🟢 Webcam service started")
 
 def stop_capturing():
-    webcam_service.stop_capturing
+    if webcam_service.running:
+        webcam_service.stop_capturing()
+        print("🔴 Webcam service stopped")
 
-start_capturing()
-
-# Initialize Eel (ensure the "web" folder contains the frontend)
+# Initialize Eel
 eel.init("web")
 
-# Start the GUI and keep Eel running
-eel.start("index.html", size=(300,300), block=True,mode='firefox')
-stop_capturing()
+@eel.expose
+def get_camera_status():
+    return {
+        "connected": check_camera_access(),
+        "index": config["camera_id"],
+        "resolution": config["resolution"]
+    }
+
+try:
+    start_capturing()
+    eel.start("index.html", size=(300, 300), block=True, mode='firefox')
+except KeyboardInterrupt:
+    print("\nShutting down gracefully...")
+finally:
+    stop_capturing()
