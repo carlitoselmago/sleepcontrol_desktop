@@ -40,7 +40,14 @@ class CameraReader(Thread):
         self.running = False
 
     def run(self):
-        psutil.Process().cpu_affinity([0])
+        if platform.system() != 'Darwin':  # 'Darwin' is macOS
+            try:
+                psutil.Process().cpu_affinity([0])
+            except AttributeError:
+                print("cpu_affinity not available on this platform.")
+            except Exception as e:
+                print(f"Could not set CPU affinity: {e}")
+
         while self.running:
             if not self.ready.is_set():
                 time.sleep(0.1)
