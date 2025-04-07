@@ -8,6 +8,7 @@ from threading import Thread, Lock, Event
 from collections import deque
 import psutil
 import subprocess
+import platform
 
 SHOW_WINDOW = False
 
@@ -228,12 +229,19 @@ class SleepControl:
 
         return d_judge < self.threshold
 
+
     def start_capturing(self):
         self._write_log("Webcam capture service started")
         self.camera.start()
         self.running = True
 
-        psutil.Process().cpu_affinity([2])
+        if platform.system() != 'Darwin':  # macOS doesn't support cpu_affinity
+            try:
+                psutil.Process().cpu_affinity([2])
+            except AttributeError:
+                print("cpu_affinity not available on this platform.")
+            except Exception as e:
+                print(f"Could not set CPU affinity: {e}")
 
         try:
             while self.running:
