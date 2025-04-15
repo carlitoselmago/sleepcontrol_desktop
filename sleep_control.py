@@ -9,6 +9,7 @@ from collections import deque
 from multiprocessing import Process, Queue, Pipe
 import platform
 import subprocess
+import sys
 
 try:
     import psutil
@@ -98,6 +99,7 @@ class FFmpegWriterProcess(Process):
         self.control_pipe = control_pipe
 
     def run(self):
+        print('running ffmpeg process')
         if psutil and platform.system() != "Darwin":
             try:
                 psutil.Process().cpu_affinity([1])
@@ -139,9 +141,9 @@ class FFmpegWriterProcess(Process):
             actual_fps = self.fps
 
         print(f"📹 Saving video with estimated FPS: {actual_fps:.2f}")
-
-        ffmpeg_path = resource_path("ffmpeg")
-        ffmpeg_cmd = [ffmpeg_path,
+        
+        
+        ffmpeg_cmd = [
             'ffmpeg', '-y',
             '-f', 'rawvideo', '-vcodec', 'rawvideo',
             '-pix_fmt', 'bgr24',
@@ -155,6 +157,13 @@ class FFmpegWriterProcess(Process):
             '-r', str(actual_fps),
             filename
         ]
+
+        if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+            print('running in a PyInstaller bundle')
+            ffmpeg_cmd.insert(0,resource_path("ffmpeg"))
+        else:
+            print('running in a normal Python process')
+            
 
         process = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE)
 

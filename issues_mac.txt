@@ -1,6 +1,29 @@
-# Copy ffmpeg into dist folder
-cp /usr/local/bin/ffmpeg dist/ffmpeg
-chmod +x dist/ffmpeg
+OSError: [Errno 48] Address already in use: ('localhost', 8000)
+[PYI-58830:ERROR] Failed to execute script 'main' due to unhandled exception!
+🔴 Webcam service stopped
+Traceback (most recent call last):
+  File "main.py", line 79, in <module>
+  File "eel/__init__.py", line 343, in start
+  File "eel/__init__.py", line 334, in run_lambda
+  File "bottle.py", line 3984, in run
+  File "bottle_websocket/server.py", line 17, in run
+  File "gevent/baseserver.py", line 398, in serve_forever
+  File "gevent/baseserver.py", line 336, in start
+  File "gevent/pywsgi.py", line 1668, in init_socket
+  File "gevent/server.py", line 173, in init_socket
+  File "gevent/server.py", line 185, in get_listener
+  File "gevent/server.py", line 264, in _tcp_listener
+  File "gevent/_socketcommon.py", line 543, in bind
+OSError: [Errno 48] Address already in use: ('localhost', 8000)
+[PYI-58829:ERROR] Failed to execute script 'main' due to unhandled exception!
+2025-04-16 01:05:38.390 main[58830:11941257] -[__NSCFNumber unlock]: unrecognized selector sent to instance 0x6000030000eb
+Exception in thread Thread-1:
+Traceback (most recent call last):
+  File "threading.py", line 1045, in _bootstrap_inner
+  File "sleep_control.py", line 70, in run
+cv2.error: Unknown C++ exception from OpenCV code
+multiprocessing/resource_tracker.py:123: UserWarning: resource_tracker: process died unexpectedly, relaunching.  Some resources might leak.
+📼 Recording process ended
 
 https://stackoverflow.com/questions/46050377/unable-to-bundle-opencv-and-pyqt5
 pyinstaller: error: unrecognized arguments: --plist=custom_Info.plist
