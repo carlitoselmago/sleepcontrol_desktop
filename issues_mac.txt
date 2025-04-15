@@ -1,3 +1,4 @@
+https://stackoverflow.com/questions/46050377/unable-to-bundle-opencv-and-pyqt5
 pyinstaller: error: unrecognized arguments: --plist=custom_Info.plist
 
 -------------------------------------

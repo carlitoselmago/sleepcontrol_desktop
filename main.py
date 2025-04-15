@@ -4,6 +4,7 @@ import os
 from sleep_control import SleepControl
 from time import sleep
 import cv2
+import sys
 
 # Configuration
 config = {
@@ -59,7 +60,11 @@ def get_camera_status():
         "index": config["camera_id"],
         "resolution": config["resolution"]
     }
-
+def resource_path(relative_path):
+        """ Get absolute path to resource, works for dev and for PyInstaller """
+        if hasattr(sys, '_MEIPASS'):
+            return os.path.join(sys._MEIPASS, relative_path)  # PyInstaller's temp folder
+        return os.path.join(os.path.abspath("."), relative_path)
 # ------------------------------
 # ✅ MacOS-Safe Entry Point
 # ------------------------------
@@ -67,7 +72,7 @@ if __name__ == "__main__":
     get_working_camera_index()
     webcam_service = SleepControl(**config)
 
-    eel.init("web")
+    eel.init(resource_path("web"))
 
     try:
         start_capturing()

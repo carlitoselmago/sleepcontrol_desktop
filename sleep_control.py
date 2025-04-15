@@ -9,6 +9,7 @@ from collections import deque
 from multiprocessing import Process, Queue, Pipe
 import platform
 import subprocess
+import sys
 
 try:
     import psutil
@@ -150,7 +151,12 @@ class FFmpegWriterProcess(Process):
         except Exception as e:
             print("⚠️ Error closing FFmpeg:", e)
 
-
+def resource_path(relative_path):
+        """ Get absolute path to resource, works for dev and for PyInstaller """
+        if hasattr(sys, '_MEIPASS'):
+            return os.path.join(sys._MEIPASS, relative_path)  # PyInstaller's temp folder
+        return os.path.join(os.path.abspath("."), relative_path)
+        
 class SleepControl:
     def __init__(self, **kwargs):
         self.interval = kwargs.get("interval", 0.4)
@@ -160,7 +166,7 @@ class SleepControl:
         self.output_dir = kwargs.get("output_dir", "photos")
         self.resolution = kwargs.get("resolution", "640x480")
         self.log_file = kwargs.get("log_file", "webcam.log")
-        self.predictor_path = kwargs.get("predictor_path", "data/shape_predictor_68_face_landmarks.dat")
+        self.predictor_path = resource_path(kwargs.get("predictor_path", "data/shape_predictor_68_face_landmarks.dat"))
 
         self.detector = dlib.get_frontal_face_detector()
         self.predictor = dlib.shape_predictor(self.predictor_path)
@@ -181,6 +187,8 @@ class SleepControl:
 
         self.camera = CameraReader(self.camera_id, self.resolution)
         os.makedirs(self.output_dir, exist_ok=True)
+    
+    
 
     def _write_log(self, message):
         with open(self.log_file, "a") as f:
