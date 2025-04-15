@@ -9,7 +9,6 @@ from collections import deque
 from multiprocessing import Process, Queue, Pipe
 import platform
 import subprocess
-import sys
 
 try:
     import psutil
@@ -30,6 +29,19 @@ class CameraReader(Thread):
         self.initialize_camera()
 
     def initialize_camera(self):
+        def set_linux_auto_exposure(cam_id):
+            import shutil
+            if shutil.which("v4l2-ctl") is None:
+                print("⚠️ v4l2-ctl not found. Skipping auto exposure config.")
+                return
+            try:
+                device = f"/dev/video{cam_id}"
+                subprocess.run(["v4l2-ctl", "--device", device, "-c", "exposure_auto=1"], check=True)
+                print("🌞 Auto exposure enabled via v4l2-ctl")
+            except Exception as e:
+                print("⚠️ Failed to set auto exposure via v4l2-ctl:", e)
+            except Exception as e:
+                print("⚠️ Failed to set auto exposure via v4l2-ctl:", e)
         backend = cv2.CAP_V4L2 if platform.system() != "Darwin" else cv2.CAP_AVFOUNDATION
         self.cap = cv2.VideoCapture(self.camera_id, backend)
         if self.cap.isOpened():
@@ -38,16 +50,19 @@ class CameraReader(Thread):
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(H))
             self.cap.set(cv2.CAP_PROP_FPS, 30)
 
-            # Enable auto exposure if supported
-        
-            #https://github.com/opencv/opencv/issues/9738
-            self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
-            self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.75) # 0.75 tested on macos
-            print("🌞 Auto exposure enabled")
+            # Enable auto exposure if supported (Linux only)
+            if platform.system() != "Darwin":
+                set_linux_auto_exposure(self.camera_id)
             print(f"✅ Camera opened successfully with backend {backend}")
         else:
             print("❌ Failed to open camera")
             self.running = False
+
+    def resource_path(relative_path):
+        import sys
+        if hasattr(sys, '_MEIPASS'):
+            return os.path.join(sys._MEIPASS, relative_path)
+        return os.path.join(os.path.abspath("."), relative_path)
 
     def run(self):
         while self.running:
@@ -125,7 +140,8 @@ class FFmpegWriterProcess(Process):
 
         print(f"📹 Saving video with estimated FPS: {actual_fps:.2f}")
 
-        ffmpeg_cmd = [
+        ffmpeg_path = resource_path("ffmpeg")
+        ffmpeg_cmd = [ffmpeg_path,
             'ffmpeg', '-y',
             '-f', 'rawvideo', '-vcodec', 'rawvideo',
             '-pix_fmt', 'bgr24',
@@ -156,7 +172,7 @@ def resource_path(relative_path):
         if hasattr(sys, '_MEIPASS'):
             return os.path.join(sys._MEIPASS, relative_path)  # PyInstaller's temp folder
         return os.path.join(os.path.abspath("."), relative_path)
-        
+
 class SleepControl:
     def __init__(self, **kwargs):
         self.interval = kwargs.get("interval", 0.4)
@@ -187,8 +203,8 @@ class SleepControl:
 
         self.camera = CameraReader(self.camera_id, self.resolution)
         os.makedirs(self.output_dir, exist_ok=True)
-    
-    
+
+
 
     def _write_log(self, message):
         with open(self.log_file, "a") as f:

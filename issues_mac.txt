@@ -1,3 +1,7 @@
+# Copy ffmpeg into dist folder
+cp /usr/local/bin/ffmpeg dist/ffmpeg
+chmod +x dist/ffmpeg
+
 https://stackoverflow.com/questions/46050377/unable-to-bundle-opencv-and-pyqt5
 pyinstaller: error: unrecognized arguments: --plist=custom_Info.plist
 
