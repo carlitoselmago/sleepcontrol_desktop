@@ -7,7 +7,7 @@ import cv2
 
 # Configuration
 config = {
-    "interval": 0.3,
+    "interval": 0.4,
     "threshold": 0.25,
     "output_dir": "recordings",
     "resolution": "1280x720",  # Reduced resolution for testing

@@ -4,11 +4,16 @@ import os
 import dlib
 import numpy as np
 from datetime import datetime
-from threading import Thread, Lock, Event
+from threading import Thread, Lock
 from collections import deque
-import psutil
-import subprocess
+from multiprocessing import Process, Queue
 import platform
+import subprocess
+
+try:
+    import psutil
+except ImportError:
+    psutil = None
 
 SHOW_WINDOW = False
 
@@ -21,48 +26,30 @@ class CameraReader(Thread):
         self.running = True
         self.frame = None
         self.lock = Lock()
-        self.ready = Event()
         self.initialize_camera()
 
     def initialize_camera(self):
-        backends = [cv2.CAP_V4L2, cv2.CAP_DSHOW, cv2.CAP_ANY]
-        for backend in backends:
-            self.cap = cv2.VideoCapture(self.camera_id, backend)
-            if self.cap.isOpened():
-                W, H = self.resolution.split("x")
-                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(W))
-                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(H))
-                self.cap.set(cv2.CAP_PROP_FPS, 30)
-                print(f"✅ Camera opened successfully with backend {backend}")
-                self.ready.set()
-                return
-
-        print("❌ Failed to open camera with all backends tried.")
-        self.running = False
+        backend = cv2.CAP_V4L2 if platform.system() != "Darwin" else cv2.CAP_AVFOUNDATION
+        self.cap = cv2.VideoCapture(self.camera_id, backend)
+        if self.cap.isOpened():
+            W, H = self.resolution.split("x")
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(W))
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(H))
+            self.cap.set(cv2.CAP_PROP_FPS, 30)
+            print(f"✅ Camera opened successfully with backend {backend}")
+        else:
+            print("❌ Failed to open camera")
+            self.running = False
 
     def run(self):
-        if platform.system() != 'Darwin':  # 'Darwin' is macOS
-            try:
-                psutil.Process().cpu_affinity([0])
-            except AttributeError:
-                print("cpu_affinity not available on this platform.")
-            except Exception as e:
-                print(f"Could not set CPU affinity: {e}")
-
         while self.running:
-            if not self.ready.is_set():
-                time.sleep(0.1)
-                continue
-
             ret, frame = self.cap.read()
             if ret:
                 with self.lock:
                     self.frame = frame
             else:
-                print("Camera read failed, attempting to reinitialize...")
-                self.cap.release()
-                time.sleep(1)
-                self.initialize_camera()
+                print("⚠️ Camera read failed")
+                time.sleep(0.1)
 
     def get_frame(self):
         with self.lock:
@@ -75,67 +62,68 @@ class CameraReader(Thread):
 
     def stop(self):
         self.running = False
-        if self.cap is not None:
+        if self.cap:
             self.cap.release()
 
-class FFmpegRecorder(Thread):
-    def __init__(self, get_frame_callback, width, height, fps, output_path, duration):
+class FFmpegWriterProcess(Process):
+    def __init__(self, frame_queue, resolution, fps, output_path, duration):
         super().__init__()
-        self.get_frame = get_frame_callback
-        self.width = width
-        self.height = height
+        self.frame_queue = frame_queue
+        self.resolution = resolution
         self.fps = fps
         self.output_path = output_path
         self.duration = duration
-        self.stop_event = Event()
 
     def run(self):
-        filename = os.path.join(
-            self.output_path,
-            f"video_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
-        )
+        if psutil and platform.system() != "Darwin":
+            try:
+                psutil.Process().cpu_affinity([1])
+                print("📍 Writer bound to core 1")
+            except Exception as e:
+                print("⚠️ CPU affinity error:", e)
+
+        W, H = self.resolution.split("x")
+        width, height = int(W), int(H)
+        filename = os.path.join(self.output_path, f"video_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4")
 
         ffmpeg_cmd = [
-            'ffmpeg',
-            '-y',
-            '-f', 'rawvideo',
-            '-vcodec', 'rawvideo',
+            'ffmpeg', '-y',
+            '-f', 'rawvideo', '-vcodec', 'rawvideo',
             '-pix_fmt', 'bgr24',
-            '-s', f'{self.width}x{self.height}',
+            '-s', f'{width}x{height}',
             '-r', str(self.fps),
             '-i', '-',
             '-an',
             '-vcodec', 'libx264',
+            '-preset', 'ultrafast',
             '-pix_fmt', 'yuv420p',
+            '-r', str(self.fps),
             filename
         ]
 
         process = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE)
-        frame_duration = 1.0 / self.fps
         start_time = time.time()
+        frame_count = 0
 
-        while not self.stop_event.is_set() and (time.time() - start_time < self.duration):
-            frame = self.get_frame()
-            if frame is not None:
-                try:
-                    process.stdin.write(frame.tobytes())
-                except Exception as e:
-                    print("FFmpeg write error:", e)
-                    break
-            time.sleep(frame_duration)
+        while time.time() - start_time < self.duration:
+            try:
+                frame = self.frame_queue.get(timeout=1)
+                process.stdin.write(frame.tobytes())
+                frame_count += 1
+            except Exception as e:
+                print("⚠️ Frame queue or write error:", e)
+                break
 
         try:
             process.stdin.close()
             process.wait()
+            print(f"✅ FFmpeg writer process finished. Total frames: {frame_count}")
         except Exception as e:
-            print("FFmpeg process close error:", e)
-
-    def stop(self):
-        self.stop_event.set()
+            print("⚠️ Error closing FFmpeg:", e)
 
 class SleepControl:
     def __init__(self, **kwargs):
-        self.interval = kwargs.get("interval", 0.1)
+        self.interval = kwargs.get("interval", 0.4)  # sleep detection interval
         self.camera_id = kwargs.get("camera_id", 0)
         self.threshold = kwargs.get("threshold", 0.25)
         self.sleepsum = kwargs.get("sleepsum", 3)
@@ -149,12 +137,13 @@ class SleepControl:
 
         self.judges = []
         self.scale_factor = 0.5
-
         self.fps = 25
+        self.recording_interval = 1.0 / self.fps
         self.min_record_duration = 7
         self.prebuffer = deque(maxlen=self.fps * 2)
         self.recording_active = False
         self.current_recorder = None
+        self.frame_queue = None
         self.running = False
 
         W, H = self.resolution.split("x")
@@ -162,19 +151,11 @@ class SleepControl:
         self.height = int(H)
 
         self.camera = CameraReader(self.camera_id, self.resolution)
-        self._create_output_dir()
-
-    def _create_output_dir(self):
         os.makedirs(self.output_dir, exist_ok=True)
 
     def _write_log(self, message):
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with open(self.log_file, "a") as f:
-            f.write(f"[{timestamp}] {message}\n")
-
-    def _draw_timestamp(self, frame):
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        cv2.putText(frame, timestamp, (10, 30), cv2.FONT_HERSHEY_PLAIN, 1.5, (255, 255, 255), 1)
+            f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {message}\n")
 
     def detect_sleep(self, frame):
         small_frame = cv2.resize(frame, (0, 0), fx=self.scale_factor, fy=self.scale_factor)
@@ -186,102 +167,101 @@ class SleepControl:
 
         rect = rects[0]
         rect = dlib.rectangle(
-            int(rect.left() / self.scale_factor),
-            int(rect.top() / self.scale_factor),
-            int(rect.right() / self.scale_factor),
-            int(rect.bottom() / self.scale_factor)
+            int(rect.left() / self.scale_factor), int(rect.top() / self.scale_factor),
+            int(rect.right() / self.scale_factor), int(rect.bottom() / self.scale_factor)
         )
 
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         landmarks = self.predictor(gray, rect)
         landmarks = np.array([[p.x, p.y] for p in landmarks.parts()])
 
-        d1 = np.linalg.norm(landmarks[37] - landmarks[41])
-        d2 = np.linalg.norm(landmarks[38] - landmarks[40])
-        d3 = np.linalg.norm(landmarks[43] - landmarks[47])
-        d4 = np.linalg.norm(landmarks[44] - landmarks[46])
-        d_mean = (d1 + d2 + d3 + d4) / 4
+        d_mean = np.mean([
+            np.linalg.norm(landmarks[37] - landmarks[41]),
+            np.linalg.norm(landmarks[38] - landmarks[40]),
+            np.linalg.norm(landmarks[43] - landmarks[47]),
+            np.linalg.norm(landmarks[44] - landmarks[46])
+        ])
 
-        d5 = np.linalg.norm(landmarks[36] - landmarks[39])
-        d6 = np.linalg.norm(landmarks[42] - landmarks[45])
-        d_reference = (d5 + d6) / 2
+        d_reference = np.mean([
+            np.linalg.norm(landmarks[36] - landmarks[39]),
+            np.linalg.norm(landmarks[42] - landmarks[45])
+        ])
+
         d_judge = d_mean / d_reference
-
         self.judges.append(d_judge)
         if len(self.judges) > self.sleepsum:
             self.judges.pop(0)
 
         judge_mean = np.mean(self.judges)
-        print("judge mean", judge_mean)
+        print("👁️ Sleep judge mean:", judge_mean)
 
         if judge_mean < self.threshold and not self.recording_active:
             self.recording_active = True
-            self.current_recorder = FFmpegRecorder(
-                self.camera.get_frame,
-                self.width,
-                self.height,
+            self.frame_queue = Queue(maxsize=100)
+            self.current_recorder = FFmpegWriterProcess(
+                self.frame_queue,
+                self.resolution,
                 self.fps,
                 self.output_dir,
                 self.min_record_duration
             )
             self.current_recorder.start()
-            self._write_log("Started recording via FFmpeg due to sleep detection")
+            self._write_log("Started recording")
 
         return d_judge < self.threshold
 
+    def _check_recorder(self):
+        if self.current_recorder and not self.current_recorder.is_alive():
+            self.recording_active = False
+            self.current_recorder = None
+            self.frame_queue = None
+            self._write_log("Recording finished")
+            print("📼 Recording process ended")
 
     def start_capturing(self):
-        self._write_log("Webcam capture service started")
+        self._write_log("Capture started")
         self.camera.start()
         self.running = True
 
-        if platform.system() != 'Darwin':  # macOS doesn't support cpu_affinity
-            try:
-                psutil.Process().cpu_affinity([2])
-            except AttributeError:
-                print("cpu_affinity not available on this platform.")
-            except Exception as e:
-                print(f"Could not set CPU affinity: {e}")
+        last_detection_time = 0
+        last_record_frame_time = 0
 
         try:
             while self.running:
-                start_time = time.time()
+                now = time.time()
                 frame = self.camera.get_frame()
                 if frame is None:
                     time.sleep(0.01)
                     continue
 
-                frame_copy = frame.copy()
-                self._draw_timestamp(frame_copy)
-                self.prebuffer.append(frame_copy)
+                # Detect sleep only every self.interval seconds
+                if now - last_detection_time >= self.interval:
+                    self.detect_sleep(frame)
+                    last_detection_time = now
 
-                self.detect_sleep(frame_copy)
+                # Record frames continuously while recording
+                if self.recording_active and self.frame_queue and not self.frame_queue.full():
+                    if now - last_record_frame_time >= self.recording_interval:
+                        self.frame_queue.put(frame)
+                        last_record_frame_time = now
+
+                self._check_recorder()
 
                 if SHOW_WINDOW:
                     cv2.imshow("Webcam", frame)
                     if cv2.waitKey(1) & 0xFF == ord("q"):
                         break
 
-                elapsed = time.time() - start_time
-                to_sleep = self.interval - elapsed
-                if to_sleep > 0:
-                    time.sleep(to_sleep)
+                time.sleep(0.01)
         finally:
             self.stop_capturing()
 
     def stop_capturing(self):
         self.running = False
         if self.current_recorder:
-            self.current_recorder.stop()
+            self.current_recorder.terminate()
             self.current_recorder.join()
         self.camera.stop()
         self._write_log("Capture stopped")
         if SHOW_WINDOW:
             cv2.destroyAllWindows()
-
-if __name__ == "__main__":
-    controller = SleepControl()
-    try:
-        controller.start_capturing()
-    except KeyboardInterrupt:
-        controller.stop_capturing()
