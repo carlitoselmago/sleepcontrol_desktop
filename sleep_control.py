@@ -41,7 +41,7 @@ class CameraReader(Thread):
         
             #https://github.com/opencv/opencv/issues/9738
             self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
-            self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, -1) # 0.75 tested on macos
+            self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.75) # 0.75 tested on macos
             print("🌞 Auto exposure enabled")
             print(f"✅ Camera opened successfully with backend {backend}")
         else:
