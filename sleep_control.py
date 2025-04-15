@@ -163,7 +163,7 @@ class SleepControl:
         self.camera_id = kwargs.get("camera_id", 0)
         self.threshold = kwargs.get("threshold", 0.25)
         self.sleepsum = kwargs.get("sleepsum", 3)
-        self.output_dir = kwargs.get("output_dir", "photos")
+        self.output_dir = resource_path(kwargs.get("output_dir", "photos"))
         self.resolution = kwargs.get("resolution", "640x480")
         self.log_file = kwargs.get("log_file", "webcam.log")
         self.predictor_path = resource_path(kwargs.get("predictor_path", "data/shape_predictor_68_face_landmarks.dat"))

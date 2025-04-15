@@ -76,7 +76,7 @@ if __name__ == "__main__":
 
     try:
         start_capturing()
-        eel.start("index.html", size=(300, 300), block=True, mode='firefox')
+        eel.start("index.html", size=(300, 300), block=True, mode='chrome')
     except KeyboardInterrupt:
         print("\nShutting down gracefully...")
     finally:
