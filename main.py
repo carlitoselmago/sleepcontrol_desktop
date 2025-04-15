@@ -11,7 +11,7 @@ config = {
     "threshold": 0.25,
     "output_dir": "recordings",
     "resolution": "1280x720",  # Reduced resolution for testing
-    "sleepsum": 30,
+    "sleepsum": 10, # the amount of frames that calculates the average of sleep
     "camera_id": 0,  # Try different indices if needed
 }
 

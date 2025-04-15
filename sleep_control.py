@@ -6,7 +6,7 @@ import numpy as np
 from datetime import datetime
 from threading import Thread, Lock
 from collections import deque
-from multiprocessing import Process, Queue
+from multiprocessing import Process, Queue, Pipe
 import platform
 import subprocess
 
@@ -36,6 +36,13 @@ class CameraReader(Thread):
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(W))
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(H))
             self.cap.set(cv2.CAP_PROP_FPS, 30)
+
+            # Enable auto exposure if supported
+        
+            #https://github.com/opencv/opencv/issues/9738
+            self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
+            self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, -1) # 0.75 tested on macos
+            print("🌞 Auto exposure enabled")
             print(f"✅ Camera opened successfully with backend {backend}")
         else:
             print("❌ Failed to open camera")
@@ -66,13 +73,13 @@ class CameraReader(Thread):
             self.cap.release()
 
 class FFmpegWriterProcess(Process):
-    def __init__(self, frame_queue, resolution, fps, output_path, duration):
+    def __init__(self, frame_queue, resolution, fps, output_path, control_pipe):
         super().__init__()
         self.frame_queue = frame_queue
         self.resolution = resolution
         self.fps = fps
         self.output_path = output_path
-        self.duration = duration
+        self.control_pipe = control_pipe
 
     def run(self):
         if psutil and platform.system() != "Darwin":
@@ -86,44 +93,67 @@ class FFmpegWriterProcess(Process):
         width, height = int(W), int(H)
         filename = os.path.join(self.output_path, f"video_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4")
 
+        frame_timestamps = []
+        raw_frames = []
+        last_activity_time = time.time()
+        min_duration = 7
+
+        while True:
+            if self.control_pipe.poll():
+                msg = self.control_pipe.recv()
+                if msg == "extend":
+                    last_activity_time = time.time()
+                elif msg == "stop":
+                    break
+
+            if time.time() - last_activity_time > min_duration:
+                break
+
+            try:
+                frame = self.frame_queue.get(timeout=0.5)
+                raw_frames.append(frame)
+                frame_timestamps.append(time.time())
+            except Exception:
+                continue
+
+        if len(frame_timestamps) >= 2:
+            total_time = frame_timestamps[-1] - frame_timestamps[0]
+            actual_fps = max(1, len(frame_timestamps) / total_time)
+        else:
+            actual_fps = self.fps
+
+        print(f"📹 Saving video with estimated FPS: {actual_fps:.2f}")
+
         ffmpeg_cmd = [
             'ffmpeg', '-y',
             '-f', 'rawvideo', '-vcodec', 'rawvideo',
             '-pix_fmt', 'bgr24',
             '-s', f'{width}x{height}',
-            '-r', str(self.fps),
+            '-r', str(actual_fps),
             '-i', '-',
             '-an',
             '-vcodec', 'libx264',
             '-preset', 'ultrafast',
             '-pix_fmt', 'yuv420p',
-            '-r', str(self.fps),
+            '-r', str(actual_fps),
             filename
         ]
 
         process = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE)
-        start_time = time.time()
-        frame_count = 0
-
-        while time.time() - start_time < self.duration:
-            try:
-                frame = self.frame_queue.get(timeout=1)
-                process.stdin.write(frame.tobytes())
-                frame_count += 1
-            except Exception as e:
-                print("⚠️ Frame queue or write error:", e)
-                break
 
         try:
+            for frame in raw_frames:
+                process.stdin.write(frame.tobytes())
             process.stdin.close()
             process.wait()
-            print(f"✅ FFmpeg writer process finished. Total frames: {frame_count}")
+            print(f"✅ FFmpeg writer process finished. Total frames: {len(raw_frames)}")
         except Exception as e:
             print("⚠️ Error closing FFmpeg:", e)
 
+
 class SleepControl:
     def __init__(self, **kwargs):
-        self.interval = kwargs.get("interval", 0.4)  # sleep detection interval
+        self.interval = kwargs.get("interval", 0.4)
         self.camera_id = kwargs.get("camera_id", 0)
         self.threshold = kwargs.get("threshold", 0.25)
         self.sleepsum = kwargs.get("sleepsum", 3)
@@ -139,12 +169,11 @@ class SleepControl:
         self.scale_factor = 0.5
         self.fps = 25
         self.recording_interval = 1.0 / self.fps
-        self.min_record_duration = 7
-        self.prebuffer = deque(maxlen=self.fps * 2)
         self.recording_active = False
         self.current_recorder = None
         self.frame_queue = None
         self.running = False
+        self.recorder_pipe = None
 
         W, H = self.resolution.split("x")
         self.width = int(W)
@@ -195,18 +224,24 @@ class SleepControl:
         judge_mean = np.mean(self.judges)
         print("👁️ Sleep judge mean:", judge_mean)
 
-        if judge_mean < self.threshold and not self.recording_active:
-            self.recording_active = True
-            self.frame_queue = Queue(maxsize=100)
-            self.current_recorder = FFmpegWriterProcess(
-                self.frame_queue,
-                self.resolution,
-                self.fps,
-                self.output_dir,
-                self.min_record_duration
-            )
-            self.current_recorder.start()
-            self._write_log("Started recording")
+        if judge_mean < self.threshold:
+            if not self.recording_active:
+                self.recording_active = True
+                self.frame_queue = Queue(maxsize=100)
+                parent_pipe, child_pipe = Pipe()
+                self.recorder_pipe = parent_pipe
+                self.current_recorder = FFmpegWriterProcess(
+                    self.frame_queue,
+                    self.resolution,
+                    self.fps,
+                    self.output_dir,
+                    child_pipe
+                )
+                self.current_recorder.start()
+                self._write_log("Started recording")
+            else:
+                if self.recorder_pipe:
+                    self.recorder_pipe.send("extend")
 
         return d_judge < self.threshold
 
@@ -215,6 +250,7 @@ class SleepControl:
             self.recording_active = False
             self.current_recorder = None
             self.frame_queue = None
+            self.recorder_pipe = None
             self._write_log("Recording finished")
             print("📼 Recording process ended")
 
@@ -234,12 +270,10 @@ class SleepControl:
                     time.sleep(0.01)
                     continue
 
-                # Detect sleep only every self.interval seconds
                 if now - last_detection_time >= self.interval:
                     self.detect_sleep(frame)
                     last_detection_time = now
 
-                # Record frames continuously while recording
                 if self.recording_active and self.frame_queue and not self.frame_queue.full():
                     if now - last_record_frame_time >= self.recording_interval:
                         self.frame_queue.put(frame)
@@ -259,7 +293,8 @@ class SleepControl:
     def stop_capturing(self):
         self.running = False
         if self.current_recorder:
-            self.current_recorder.terminate()
+            if self.recorder_pipe:
+                self.recorder_pipe.send("stop")
             self.current_recorder.join()
         self.camera.stop()
         self._write_log("Capture stopped")
