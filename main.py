@@ -4,153 +4,159 @@ import os
 import subprocess
 import sys
 from sleep_control import SleepControl
-from time import sleep, strftime
+import time
+from time import strftime
 import cv2
 
-# Configuration
+# ---------------------------------
+# 🔧 CONFIGURATION
+# ---------------------------------
 config = {
     "interval": 0.4,
     "threshold": 0.25,
     "output_dir": "recordings",
-    "resolution": "1280x720",  # Reduced resolution for testing
-    "sleepsum": 10,  # the amount of frames that calculates the average of sleep
-    "camera_id": 0,  # Try different indices if needed
+    "resolution": "1280x720",
+    "sleepsum": 10,
+    "camera_id": 0,
+    "min_recording_duration": 7      # seconds – shared by webcam & screen
 }
 
-# Globals for screen recording
-_screen_proc = None
-_screen_lock = threading.Lock()
-
-def resource_path(relative_path):
-    """ Get absolute path to resource, works for dev and for PyInstaller """
-    if hasattr(sys, '_MEIPASS'):
-        return os.path.join(sys._MEIPASS, relative_path)
-    return os.path.join(os.path.abspath('.'), relative_path)
+# ---------------------------------
+# 🔨 UTILS
+# ---------------------------------
+def resource_path(rel):
+    if hasattr(sys, "_MEIPASS"):
+        return os.path.join(sys._MEIPASS, rel)
+    return os.path.join(os.path.abspath("."), rel)
 
 def check_camera_access():
-    """Check if camera is accessible"""
     cap = cv2.VideoCapture(config["camera_id"])
-    sleep(1)
-    if cap.isOpened():
-        cap.release()
-        return True
-    return False
+    time.sleep(1)
+    ok = cap.isOpened()
+    cap.release()
+    return ok
 
 def get_working_camera_index():
     if check_camera_access():
         return config["camera_id"]
-
-    print("⚠️ Camera not accessible. Trying alternative solutions...")
-    for i in range(0, 4):
+    print("⚠️ Default camera not accessible. Scanning 0-3 …")
+    for i in range(4):
         config["camera_id"] = i
         if check_camera_access():
             print(f"✅ Found working camera at index {i}")
             return i
-    print("❌ No working camera found. Please check your camera connection.")
-    exit(1)
+    print("❌ No working camera found.")
+    sys.exit(1)
 
-def start_screen_recording():
-    import subprocess
-    global _screen_proc
-    with _screen_lock:
-        if _screen_proc is not None:
-            return  # already recording
+# ---------------------------------
+# 📺 SCREEN RECORDER (FFmpeg)
+# ---------------------------------
+class ScreenRecorder:
+    def __init__(self, cfg):
+        self.cfg   = cfg
+        self.proc  = None
+        self.lock  = threading.Lock()
+        self.start_time = 0
+        self.file  = None
 
-        os.makedirs(config['output_dir'], exist_ok=True)
-        timestamp = strftime("%Y%m%d_%H%M%S")
-        filename = os.path.join(config['output_dir'], f"screen_{timestamp}.mp4")
-        log_path = os.path.join(config['output_dir'], f"screen_{timestamp}.log")
+    # ---------- start ----------
+    def start(self):
+        with self.lock:
+            if self.proc is not None:
+                return                                    # already running
+            self.start_time = time.time()
 
-        if sys.platform.startswith("linux"):
-            session_type = os.environ.get("XDG_SESSION_TYPE", "").lower()
+            os.makedirs(self.cfg["output_dir"], exist_ok=True)
+            stamp      = strftime("%Y%m%d_%H%M%S")
+            self.file  = os.path.join(self.cfg["output_dir"],
+                                      f"screen_{stamp}.mp4")
+            log_path   = os.path.join(self.cfg["output_dir"],
+                                      f"screen_{stamp}.log")
 
-            if session_type == "wayland":
-                # PipeWire (Wayland)
-                cmd = [
-                    "ffmpeg", "-y",
-                    "-f", "pipewire",
-                    "-i", "0",
-                    filename
-                ]
+            # ---- build ffmpeg cmd per-platform ----
+            if sys.platform.startswith("linux"):
+                sess = os.environ.get("XDG_SESSION_TYPE", "").lower()
+                if sess == "wayland":
+                    cmd = ["ffmpeg", "-y", "-f", "pipewire", "-i", "0",
+                           self.file]
+                else:  # X11
+                    try:
+                        xr = subprocess.check_output(["xrandr"],
+                                stderr=subprocess.DEVNULL).decode()
+                        res = next(l for l in xr.splitlines() if "*" in l
+                                   ).strip().split()[0]
+                    except Exception:
+                        res = self.cfg["resolution"]
+                    w, h = res.split("x")
+                    disp = os.environ.get("DISPLAY", ":0")
+                    cmd  = ["ffmpeg", "-y", "-f", "x11grab",
+                            "-s", f"{w}x{h}", "-r", "24",
+                            "-i", f"{disp}+0,0",
+                            "-c:v", "libx264", "-preset", "ultrafast",
+                            "-pix_fmt", "yuv420p", self.file]
+
+            elif sys.platform == "darwin":
+                cmd = ["ffmpeg", "-y", "-f", "avfoundation",
+                       "-framerate", "30", "-i", "1:none", self.file]
+
+            elif sys.platform.startswith("win"):
+                cmd = ["ffmpeg", "-y", "-f", "gdigrab",
+                       "-framerate", "30", "-i", "desktop", self.file]
             else:
-                # X11 - Auto-detect resolution
+                raise RuntimeError("Unsupported OS")
+
+            # ---- launch ----
+            with open(log_path, "w") as logf:
+                self.proc = subprocess.Popen(
+                    cmd, stdin=subprocess.PIPE, stdout=logf, stderr=logf
+                )
+            print(f"🖥️ Screen recording STARTED  →  {self.file}")
+
+    # ---------- stop ----------
+    def stop(self):
+        with self.lock:
+            if self.proc is None:
+                return                                    # nothing to stop
+
+            # ALWAYS wait the configured duration AFTER on_wake
+            wait_for = self.cfg["min_recording_duration"]
+            print(f"⏳ Waiting {wait_for}s to align with webcam file …")
+            time.sleep(wait_for)
+
+            print("🛑 Stopping screen recording …")
+            try:
+                self.proc.stdin.write(b"q\n")
+                self.proc.stdin.flush()
+                self.proc.wait(timeout=5)
+            except Exception:
+                self.proc.terminate()
                 try:
-                    xrandr_output = subprocess.check_output(
-                        ["xrandr"], stderr=subprocess.DEVNULL
-                    ).decode()
-                    # Find the line with '*' indicating the current mode
-                    for line in xrandr_output.splitlines():
-                        if "*" in line:
-                            resolution_str = line.strip().split()[0]
-                            break
-                    else:
-                        # fallback to config if not found
-                        resolution_str = config["resolution"]
-                    width, height = resolution_str.split("x")
-                except Exception as e:
-                    print(f"⚠️ Could not detect screen resolution: {e}")
-                    width, height = config["resolution"].split("x")
+                    self.proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    self.proc.kill()
 
-                display = os.environ.get("DISPLAY", ":0")
+            self.proc = None
+            print(f"✅ Screen recording SAVED   →  {self.file}")
 
-                # Use -s instead of -video_size to match your working example
-                cmd = [
-                    "ffmpeg", "-y",
-                    "-f", "x11grab",
-                    "-s", f"{width}x{height}",
-                    "-r", "24",
-                    "-i", f"{display}+0,0",
-                    "-c:v", "libx264",
-                    "-preset", "ultrafast",
-                    "-pix_fmt", "yuv420p",
-                    filename
-                ]
+# Global instance
+screen_recorder = ScreenRecorder(config)
 
-        elif sys.platform == "darwin":
-            # macOS
-            cmd = [
-                "ffmpeg", "-y",
-                "-f", "avfoundation",
-                "-framerate", "30",
-                "-i", "1:none",
-                filename
-            ]
-
-        elif sys.platform.startswith("win"):
-            # Windows
-            cmd = [
-                "ffmpeg", "-y",
-                "-f", "gdigrab",
-                "-framerate", "30",
-                "-i", "desktop",
-                filename
-            ]
-        else:
-            raise RuntimeError("Unsupported platform")
-
-        with open(log_path, "w") as logf:
-            _screen_proc = subprocess.Popen(cmd, stdout=logf, stderr=logf)
-        print(f"🖥️ Started screen recording with FFmpeg: {filename}\n(see {log_path} for logs)")
-
+# ---------------------------------
+# 🔌 CALLBACKS
+# ---------------------------------
+def start_screen_recording():
+    screen_recorder.start()
 
 def stop_screen_recording():
-    """Stop the ffmpeg recording process"""
-    global _screen_proc
-    with _screen_lock:
-        if _screen_proc is not None:
-            _screen_proc.terminate()
-            _screen_proc.wait()
-            print("🛑 Screen recording stopped")
-            _screen_proc = None
+    screen_recorder.stop()
 
+# ---------------------------------
+# 🎥 WEBCAM CAPTURE WRAPPER
+# ---------------------------------
 def start_capturing():
     if not webcam_service.running:
-        thread = threading.Thread(
-            target=webcam_service.start_capturing,
-            daemon=True,
-            name="WebcamCaptureThread"
-        )
-        thread.start()
+        threading.Thread(target=webcam_service.start_capturing,
+                         daemon=True).start()
         print("🟢 Webcam service started")
 
 def stop_capturing():
@@ -160,33 +166,28 @@ def stop_capturing():
 
 @eel.expose
 def get_camera_status():
-    return {
-        "connected": check_camera_access(),
-        "index": config["camera_id"],
-        "resolution": config["resolution"]
-    }
+    return {"connected": check_camera_access(),
+            "index":     config["camera_id"],
+            "resolution":config["resolution"]}
 
-# ------------------------------
-# ✅ MacOS-Safe Entry Point
-# ------------------------------
+# ---------------------------------
+# 🚀 MAIN
+# ---------------------------------
 if __name__ == "__main__":
     get_working_camera_index()
     webcam_service = SleepControl(**config)
 
-    # Hook into sleep/wake events
-    try:
-        webcam_service.on_sleep.append(start_screen_recording)
-        webcam_service.on_wake.append(stop_screen_recording)
-    except AttributeError:
-        print("⚠️ SleepControl has no event hooks; ensure it supports on_sleep/on_wake lists.")
+    # register hooks
+    webcam_service.on_sleep.append(start_screen_recording)
+    webcam_service.on_wake.append(stop_screen_recording)
 
     eel.init(resource_path("web"))
 
     try:
         start_capturing()
-        eel.start("index.html", size=(300, 300), block=True, mode='chrome')
+        eel.start("index.html", size=(300, 300), block=True, mode="chrome")
     except KeyboardInterrupt:
-        print("\nShutting down gracefully...")
+        print("\n🔚 Interrupted by user")
     finally:
         stop_capturing()
         stop_screen_recording()

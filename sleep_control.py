@@ -16,9 +16,8 @@ try:
 except ImportError:
     psutil = None
 
-SHOW_WINDOW = False
+SHOW_WINDOW = True
 
-# Helper for PyInstaller resource loading
 def resource_path(relative_path):
     if hasattr(sys, '_MEIPASS'):
         return os.path.join(sys._MEIPASS, relative_path)
@@ -87,13 +86,14 @@ class CameraReader(Thread):
             self.cap.release()
 
 class FFmpegWriterProcess(Process):
-    def __init__(self, frame_queue, resolution, fps, output_path, control_pipe):
+    def __init__(self, frame_queue, resolution, fps, output_path, control_pipe, min_duration):
         super().__init__()
         self.frame_queue = frame_queue
         self.resolution = resolution
         self.fps = fps
         self.output_path = output_path
         self.control_pipe = control_pipe
+        self.min_duration = min_duration  # ✅ New: configurable
 
     def run(self):
         print('📹 FFmpeg writer process started')
@@ -111,7 +111,6 @@ class FFmpegWriterProcess(Process):
         frame_timestamps = []
         raw_frames = []
         last_activity = time.time()
-        min_duration = 7
 
         while True:
             if self.control_pipe.poll():
@@ -120,7 +119,7 @@ class FFmpegWriterProcess(Process):
                     last_activity = time.time()
                 elif msg == "stop":
                     break
-            if time.time() - last_activity > min_duration:
+            if time.time() - last_activity > self.min_duration:
                 break
             try:
                 frame = self.frame_queue.get(timeout=0.5)
@@ -160,11 +159,9 @@ class FFmpegWriterProcess(Process):
 
 class SleepControl:
     def __init__(self, **kwargs):
-        # Event hooks
         self.on_sleep = []
         self.on_wake = []
 
-        # Configs
         self.interval = kwargs.get("interval", 0.4)
         self.camera_id = kwargs.get("camera_id", 0)
         self.threshold = kwargs.get("threshold", 0.25)
@@ -174,12 +171,11 @@ class SleepControl:
         self.resolution = kwargs.get("resolution", "640x480")
         self.log_file = kwargs.get("log_file", "webcam.log")
         self.predictor_path = resource_path(kwargs.get("predictor_path", "data/shape_predictor_68_face_landmarks.dat"))
+        self.min_recording_duration = kwargs.get("min_recording_duration", 7)  # ✅ New configurable duration
 
-        # dlib face detection
         self.detector = dlib.get_frontal_face_detector()
         self.predictor = dlib.shape_predictor(self.predictor_path)
 
-        # State
         self.judges = deque(maxlen=self.sleepsum)
         self.scale_factor = 0.5
         self.fps = 25
@@ -191,44 +187,53 @@ class SleepControl:
         self.running = False
         self.was_sleeping = False
 
-        # Camera
         W, H = self.resolution.split("x")
         self.width, self.height = int(W), int(H)
         self.camera = CameraReader(self.camera_id, self.resolution)
+
+        self.last_landmarks = None
+        self.last_rect = None
 
     def _write_log(self, message):
         with open(self.log_file, "a") as f:
             f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {message}\n")
 
     def detect_sleep(self, frame):
-        # Face landmarks -> eye aspect ratio
-        small = cv2.resize(frame, (0,0), fx=self.scale_factor, fy=self.scale_factor)
+        small = cv2.resize(frame, (0, 0), fx=self.scale_factor, fy=self.scale_factor)
         gray_s = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
         rects = self.detector(gray_s, 1)
+
         if not rects:
+            self.last_landmarks = None
+            self.last_rect = None
             self._handle_wake()
             return False
-        # Scale rectangle
+
         r = rects[0]
         rect = dlib.rectangle(
-            int(r.left()/self.scale_factor), int(r.top()/self.scale_factor),
-            int(r.right()/self.scale_factor), int(r.bottom()/self.scale_factor)
+            int(r.left() / self.scale_factor), int(r.top() / self.scale_factor),
+            int(r.right() / self.scale_factor), int(r.bottom() / self.scale_factor)
         )
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         lm = self.predictor(gray, rect)
-        landmarks = np.array([[p.x,p.y] for p in lm.parts()])
+        landmarks = np.array([[p.x, p.y] for p in lm.parts()])
+
+        self.last_landmarks = landmarks
+        self.last_rect = rect
+
         ear = np.mean([
-            np.linalg.norm(landmarks[37]-landmarks[41]),
-            np.linalg.norm(landmarks[38]-landmarks[40]),
-            np.linalg.norm(landmarks[43]-landmarks[47]),
-            np.linalg.norm(landmarks[44]-landmarks[46])
+            np.linalg.norm(landmarks[37] - landmarks[41]),
+            np.linalg.norm(landmarks[38] - landmarks[40]),
+            np.linalg.norm(landmarks[43] - landmarks[47]),
+            np.linalg.norm(landmarks[44] - landmarks[46])
         ]) / np.mean([
-            np.linalg.norm(landmarks[36]-landmarks[39]),
-            np.linalg.norm(landmarks[42]-landmarks[45])
+            np.linalg.norm(landmarks[36] - landmarks[39]),
+            np.linalg.norm(landmarks[42] - landmarks[45])
         ])
         self.judges.append(ear)
         avg = np.mean(self.judges)
         print("👁️ Sleep judge mean:", avg)
+
         if avg < self.threshold:
             if not self.recording_active:
                 self._start_recording()
@@ -240,30 +245,35 @@ class SleepControl:
             return False
 
     def _start_recording(self):
-        # Initialize queue & process
         self.recording_active = True
         self.frame_queue = Queue(maxsize=100)
         parent, child = Pipe()
         self.recorder_pipe = parent
         self.current_recorder = FFmpegWriterProcess(
-            self.frame_queue, f"{self.width}x{self.height}", self.fps, self.output_dir, child
+            self.frame_queue,
+            f"{self.width}x{self.height}",
+            self.fps,
+            self.output_dir,
+            child,
+            min_duration=self.min_recording_duration  # ✅ Pass it here
         )
         self.current_recorder.start()
         self.was_sleeping = True
         self._write_log("Started recording")
-        # Fire sleep hooks
         for cb in self.on_sleep:
-            try: cb()
-            except Exception as e: print("⚠️ on_sleep hook error:", e)
+            try:
+                cb()
+            except Exception as e:
+                print("⚠️ on_sleep hook error:", e)
 
     def _handle_wake(self):
         if self.was_sleeping:
-            # Fire wake hooks
             for cb in self.on_wake:
-                try: cb()
-                except Exception as e: print("⚠️ on_wake hook error:", e)
+                try:
+                    cb()
+                except Exception as e:
+                    print("⚠️ on_wake hook error:", e)
             self.was_sleeping = False
-        # Let the recorder finish based on its own min_duration
 
     def _check_recorder(self):
         if self.current_recorder and not self.current_recorder.is_alive():
@@ -286,18 +296,31 @@ class SleepControl:
                 if frame is None:
                     time.sleep(0.01)
                     continue
+
                 now = time.time()
                 if now - last_detect >= self.interval:
                     self.detect_sleep(frame)
                     last_detect = now
+
+                if SHOW_WINDOW:
+                    frame_to_show = frame.copy()
+                    if self.last_landmarks is not None:
+                        for (x, y) in self.last_landmarks:
+                            cv2.circle(frame_to_show, (x, y), 2, (0, 255, 0), -1)
+                else:
+                    frame_to_show = None
+
                 if self.recording_active and self.frame_queue and not self.frame_queue.full() and now - last_frame >= self.recording_interval:
                     self.frame_queue.put(frame)
                     last_frame = now
+
                 self._check_recorder()
+
                 if SHOW_WINDOW:
-                    cv2.imshow("Webcam", frame)
+                    cv2.imshow("Webcam", frame_to_show)
                     if cv2.waitKey(1) & 0xFF == ord('q'):
                         break
+
                 time.sleep(0.01)
         finally:
             self.stop_capturing()
