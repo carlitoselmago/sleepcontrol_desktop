@@ -177,3 +177,4 @@ cython_debug/
 .pypirc
 .DS_Store
 data/face_landmarker_68_5.onnx
+data/2d106det.onnx
