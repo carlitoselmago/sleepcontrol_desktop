@@ -17,7 +17,10 @@ try:
 except ImportError:
     psutil = None
 
-SHOW_WINDOW = True
+
+# IMPORTANT:
+# When using Flet (or any GUI), OpenCV windows must be disabled on macOS
+SHOW_WINDOW = False
 
 
 # ---------------------------------
@@ -30,7 +33,7 @@ def resource_path(relative_path):
 
 
 # ---------------------------------
-# Camera Reader
+# Camera Reader Thread
 # ---------------------------------
 class CameraReader(Thread):
     def __init__(self, camera_id=0, resolution="640x480"):
@@ -160,7 +163,7 @@ class FFmpegWriterProcess(Process):
 
 
 # ---------------------------------
-# Sleep Control (ONNX Landmarks)
+# Sleep Control (InsightFace 2d106det)
 # ---------------------------------
 class SleepControl:
     def __init__(self, **kwargs):
@@ -169,7 +172,7 @@ class SleepControl:
 
         self.interval = kwargs.get("interval", 0.4)
         self.camera_id = kwargs.get("camera_id", 0)
-        self.threshold = kwargs.get("threshold", 0.25)
+        self.threshold = kwargs.get("threshold", 0.20)  # tuned for 106 landmarks
         self.sleepsum = kwargs.get("sleepsum", 5)
         self.output_dir = resource_path(kwargs.get("output_dir", "videos"))
         self.resolution = kwargs.get("resolution", "640x480")
@@ -191,14 +194,14 @@ class SleepControl:
 
         self.camera = CameraReader(self.camera_id, self.resolution)
 
-        # ---- Face detector ----
+        # Face detector (only for bounding box)
         self.face_detector = cv2.CascadeClassifier(
             cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
         )
 
-        # ---- Landmark ONNX model ----
+        # ONNX landmark model (InsightFace)
         self.landmark_sess = ort.InferenceSession(
-            resource_path("data/face_landmarker_68_5.onnx"),
+            resource_path("data/2d106det.onnx"),
             providers=["CPUExecutionProvider"]
         )
         self.landmark_input = self.landmark_sess.get_inputs()[0].name
@@ -206,19 +209,26 @@ class SleepControl:
 
         self.last_landmarks = None
 
+        # Eye indices for InsightFace 106
+        self.LEFT_EYE = [35, 36, 37, 38, 39, 40]
+        self.RIGHT_EYE = [89, 90, 91, 92, 93, 94]
+
     # ---------------------------------
     # Landmark inference
     # ---------------------------------
-    def _predict_landmarks(self, gray, face):
+    def _predict_landmarks(self, frame, face):
         x, y, w, h = face
-        face_img = gray[y:y+h, x:x+w]
+        face_img = frame[y:y+h, x:x+w]
 
         if face_img.size == 0:
             return None
 
-        face_img = cv2.resize(face_img, (256, 256))
+        face_img = cv2.cvtColor(face_img, cv2.COLOR_BGR2RGB)
+        face_img = cv2.resize(face_img, (192, 192))
         face_img = face_img.astype(np.float32) / 255.0
-        face_img = face_img[None, None, :, :]  # NCHW
+
+        face_img = np.transpose(face_img, (2, 0, 1))  # CHW
+        face_img = face_img[np.newaxis, :, :, :]      # NCHW
 
         preds = self.landmark_sess.run(
             [self.landmark_output],
@@ -226,10 +236,21 @@ class SleepControl:
         )[0]
 
         landmarks = preds.reshape(-1, 2)
+
         landmarks[:, 0] = landmarks[:, 0] * w + x
         landmarks[:, 1] = landmarks[:, 1] * h + y
 
         return landmarks.astype(int)
+
+    # ---------------------------------
+    # EAR
+    # ---------------------------------
+    def _eye_aspect_ratio(self, landmarks, idxs):
+        p = landmarks[idxs]
+        A = np.linalg.norm(p[1] - p[5])
+        B = np.linalg.norm(p[2] - p[4])
+        C = np.linalg.norm(p[0] - p[3])
+        return (A + B) / (2.0 * C)
 
     # ---------------------------------
     # Sleep detection
@@ -247,24 +268,17 @@ class SleepControl:
             return False
 
         face = faces[0]
-        landmarks = self._predict_landmarks(gray, face)
+        landmarks = self._predict_landmarks(frame, face)
 
-        if landmarks is None or len(landmarks) < 68:
+        if landmarks is None or len(landmarks) < 106:
             self._handle_wake()
             return False
 
         self.last_landmarks = landmarks
 
-        # ---- EAR (unchanged from dlib) ----
-        ear = np.mean([
-            np.linalg.norm(landmarks[37] - landmarks[41]),
-            np.linalg.norm(landmarks[38] - landmarks[40]),
-            np.linalg.norm(landmarks[43] - landmarks[47]),
-            np.linalg.norm(landmarks[44] - landmarks[46]),
-        ]) / np.mean([
-            np.linalg.norm(landmarks[36] - landmarks[39]),
-            np.linalg.norm(landmarks[42] - landmarks[45]),
-        ])
+        left_ear = self._eye_aspect_ratio(landmarks, self.LEFT_EYE)
+        right_ear = self._eye_aspect_ratio(landmarks, self.RIGHT_EYE)
+        ear = (left_ear + right_ear) / 2.0
 
         self.judges.append(ear)
         avg = np.mean(self.judges)
@@ -336,15 +350,6 @@ class SleepControl:
                         self.frame_queue.put(frame)
                         last_frame = now
 
-                if SHOW_WINDOW:
-                    frame_to_show = frame.copy()
-                    if self.last_landmarks is not None:
-                        for (x, y) in self.last_landmarks:
-                            cv2.circle(frame_to_show, (x, y), 2, (0, 255, 0), -1)
-                    #cv2.imshow("Webcam", frame_to_show)
-                    if cv2.waitKey(1) & 0xFF == ord("q"):
-                        break
-
         finally:
             self.stop_capturing()
 
@@ -354,5 +359,3 @@ class SleepControl:
             self.recorder_pipe.send("stop")
             self.current_recorder.join()
         self.camera.stop()
-        if SHOW_WINDOW:
-            cv2.destroyAllWindows()
