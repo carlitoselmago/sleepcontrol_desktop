@@ -10,7 +10,7 @@ import platform
 import subprocess
 import sys
 
-from mediapipe.python.solutions.face_mesh import FaceMesh
+import onnxruntime as ort
 
 try:
     import psutil
@@ -41,9 +41,9 @@ class CameraReader(Thread):
         self.running = True
         self.frame = None
         self.lock = Lock()
-        self.initialize_camera()
+        self._init_camera()
 
-    def initialize_camera(self):
+    def _init_camera(self):
         backend = (
             cv2.CAP_AVFOUNDATION
             if platform.system() == "Darwin"
@@ -56,10 +56,11 @@ class CameraReader(Thread):
             self.running = False
             return
 
-        W, H = self.resolution.split("x")
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(W))
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(H))
+        w, h = self.resolution.split("x")
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(w))
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(h))
         self.cap.set(cv2.CAP_PROP_FPS, 30)
+
         print("✅ Camera opened")
 
     def run(self):
@@ -79,7 +80,8 @@ class CameraReader(Thread):
             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             cv2.putText(
                 frame, ts, (10, 30),
-                cv2.FONT_HERSHEY_PLAIN, 1.5, (255, 255, 255), 1
+                cv2.FONT_HERSHEY_PLAIN, 1.5,
+                (255, 255, 255), 1
             )
             return frame
 
@@ -90,7 +92,7 @@ class CameraReader(Thread):
 
 
 # ---------------------------------
-# FFmpeg Writer Process (unchanged)
+# FFmpeg Writer Process
 # ---------------------------------
 class FFmpegWriterProcess(Process):
     def __init__(self, frame_queue, resolution, fps, output_path, control_pipe, min_duration):
@@ -103,9 +105,7 @@ class FFmpegWriterProcess(Process):
         self.min_duration = min_duration
 
     def run(self):
-        W, H = self.resolution.split("x")
-        width, height = int(W), int(H)
-
+        w, h = map(int, self.resolution.split("x"))
         filename = os.path.join(
             self.output_path,
             f"video_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
@@ -142,7 +142,7 @@ class FFmpegWriterProcess(Process):
             "ffmpeg", "-y",
             "-f", "rawvideo",
             "-pix_fmt", "bgr24",
-            "-s", f"{width}x{height}",
+            "-s", f"{w}x{h}",
             "-r", str(fps),
             "-i", "-",
             "-an",
@@ -160,7 +160,7 @@ class FFmpegWriterProcess(Process):
 
 
 # ---------------------------------
-# Sleep Control (MediaPipe)
+# Sleep Control (ONNX Landmarks)
 # ---------------------------------
 class SleepControl:
     def __init__(self, **kwargs):
@@ -181,8 +181,6 @@ class SleepControl:
         self.recording_active = False
         self.was_sleeping = False
 
-        self.camera = CameraReader(self.camera_id, self.resolution)
-
         self.frame_queue = None
         self.recorder_pipe = None
         self.current_recorder = None
@@ -191,43 +189,81 @@ class SleepControl:
         self.recording_interval = 1 / self.fps
         self.running = False
 
-        try:
-            self.mp_face = FaceMesh(
-                max_num_faces=1,
-                refine_landmarks=True,
-                min_detection_confidence=0.5,
-                min_tracking_confidence=0.5,
-            )
-        except Exception as e:
-            print("❌ MediaPipe init failed:", e)
-            self.mp_face = None
+        self.camera = CameraReader(self.camera_id, self.resolution)
 
-    # EAR computation using MediaPipe indices
-    def _eye_aspect_ratio(self, lm, idxs):
-        p = np.array([[lm[i].x, lm[i].y] for i in idxs])
-        A = np.linalg.norm(p[1] - p[5])
-        B = np.linalg.norm(p[2] - p[4])
-        C = np.linalg.norm(p[0] - p[3])
-        return (A + B) / (2.0 * C)
+        # ---- Face detector ----
+        self.face_detector = cv2.CascadeClassifier(
+            cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+        )
 
+        # ---- Landmark ONNX model ----
+        self.landmark_sess = ort.InferenceSession(
+            resource_path("data/face_landmarks_68.onnx"),
+            providers=["CPUExecutionProvider"]
+        )
+        self.landmark_input = self.landmark_sess.get_inputs()[0].name
+        self.landmark_output = self.landmark_sess.get_outputs()[0].name
+
+        self.last_landmarks = None
+
+    # ---------------------------------
+    # Landmark inference
+    # ---------------------------------
+    def _predict_landmarks(self, gray, face):
+        x, y, w, h = face
+        face_img = gray[y:y+h, x:x+w]
+
+        if face_img.size == 0:
+            return None
+
+        face_img = cv2.resize(face_img, (256, 256))
+        face_img = face_img.astype(np.float32) / 255.0
+        face_img = face_img[None, None, :, :]  # NCHW
+
+        preds = self.landmark_sess.run(
+            [self.landmark_output],
+            {self.landmark_input: face_img}
+        )[0]
+
+        landmarks = preds.reshape(-1, 2)
+        landmarks[:, 0] = landmarks[:, 0] * w + x
+        landmarks[:, 1] = landmarks[:, 1] * h + y
+
+        return landmarks.astype(int)
+
+    # ---------------------------------
+    # Sleep detection
+    # ---------------------------------
     def detect_sleep(self, frame):
-        if self.mp_face is None:
-            return False
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        res = self.mp_face.process(rgb)
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        if not res.multi_face_landmarks:
+        faces = self.face_detector.detectMultiScale(
+            gray, scaleFactor=1.2, minNeighbors=5, minSize=(80, 80)
+        )
+
+        if len(faces) == 0:
+            self.last_landmarks = None
             self._handle_wake()
             return False
 
-        lm = res.multi_face_landmarks[0].landmark
+        face = faces[0]
+        landmarks = self._predict_landmarks(gray, face)
 
-        left_eye = [33, 160, 158, 133, 153, 144]
-        right_eye = [362, 385, 387, 263, 373, 380]
+        if landmarks is None or len(landmarks) < 68:
+            self._handle_wake()
+            return False
 
+        self.last_landmarks = landmarks
+
+        # ---- EAR (unchanged from dlib) ----
         ear = np.mean([
-            self._eye_aspect_ratio(lm, left_eye),
-            self._eye_aspect_ratio(lm, right_eye),
+            np.linalg.norm(landmarks[37] - landmarks[41]),
+            np.linalg.norm(landmarks[38] - landmarks[40]),
+            np.linalg.norm(landmarks[43] - landmarks[47]),
+            np.linalg.norm(landmarks[44] - landmarks[46]),
+        ]) / np.mean([
+            np.linalg.norm(landmarks[36] - landmarks[39]),
+            np.linalg.norm(landmarks[42] - landmarks[45]),
         ])
 
         self.judges.append(ear)
@@ -244,16 +280,19 @@ class SleepControl:
             self._handle_wake()
             return False
 
+    # ---------------------------------
+    # Recording control
+    # ---------------------------------
     def _start_recording(self):
         self.recording_active = True
         self.frame_queue = Queue(maxsize=100)
         parent, child = Pipe()
         self.recorder_pipe = parent
 
-        W, H = self.resolution.split("x")
+        w, h = self.resolution.split("x")
         self.current_recorder = FFmpegWriterProcess(
             self.frame_queue,
-            f"{W}x{H}",
+            f"{w}x{h}",
             self.fps,
             self.output_dir,
             child,
@@ -271,6 +310,9 @@ class SleepControl:
                 cb()
             self.was_sleeping = False
 
+    # ---------------------------------
+    # Main loop
+    # ---------------------------------
     def start_capturing(self):
         self.camera.start()
         self.running = True
@@ -295,7 +337,11 @@ class SleepControl:
                         last_frame = now
 
                 if SHOW_WINDOW:
-                    cv2.imshow("Webcam", frame)
+                    frame_to_show = frame.copy()
+                    if self.last_landmarks is not None:
+                        for (x, y) in self.last_landmarks:
+                            cv2.circle(frame_to_show, (x, y), 2, (0, 255, 0), -1)
+                    cv2.imshow("Webcam", frame_to_show)
                     if cv2.waitKey(1) & 0xFF == ord("q"):
                         break
 
