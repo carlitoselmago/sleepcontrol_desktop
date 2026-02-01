@@ -1,7 +1,3 @@
 opencv-python==4.7.0.72
 opencv-python-headless==4.9.0.80
-eel==0.18.1
-PyInstaller
-mediapipe
-pyscreenrec
-screeninfo
+'flet[all]'
