@@ -10,7 +10,7 @@ import platform
 import subprocess
 import sys
 
-import mediapipe as mp
+from mediapipe.python.solutions.face_mesh import FaceMesh
 
 try:
     import psutil
@@ -191,12 +191,16 @@ class SleepControl:
         self.recording_interval = 1 / self.fps
         self.running = False
 
-        self.mp_face = mp.solutions.face_mesh.FaceMesh(
-            max_num_faces=1,
-            refine_landmarks=True,
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5,
-        )
+        try:
+            self.mp_face = FaceMesh(
+                max_num_faces=1,
+                refine_landmarks=True,
+                min_detection_confidence=0.5,
+                min_tracking_confidence=0.5,
+            )
+        except Exception as e:
+            print("❌ MediaPipe init failed:", e)
+            self.mp_face = None
 
     # EAR computation using MediaPipe indices
     def _eye_aspect_ratio(self, lm, idxs):
@@ -207,6 +211,8 @@ class SleepControl:
         return (A + B) / (2.0 * C)
 
     def detect_sleep(self, frame):
+        if self.mp_face is None:
+            return False
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         res = self.mp_face.process(rgb)
 
