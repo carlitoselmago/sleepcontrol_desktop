@@ -217,7 +217,7 @@ def main(page: ft.Page):
         while True:
             msg = log_queue.get()
             log_view.value += msg + "\n"
-            log_view.scroll_to_end()
+            log_view.cursor_position = len(log_view.value)
             page.update()
 
     threading.Thread(target=log_pump, daemon=True).start()
