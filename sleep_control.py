@@ -198,7 +198,7 @@ class SleepControl:
 
         # ---- Landmark ONNX model ----
         self.landmark_sess = ort.InferenceSession(
-            resource_path("data/face_landmarks_68.onnx"),
+            resource_path("data/face_landmarker_68_5.onnx"),
             providers=["CPUExecutionProvider"]
         )
         self.landmark_input = self.landmark_sess.get_inputs()[0].name
@@ -341,7 +341,7 @@ class SleepControl:
                     if self.last_landmarks is not None:
                         for (x, y) in self.last_landmarks:
                             cv2.circle(frame_to_show, (x, y), 2, (0, 255, 0), -1)
-                    cv2.imshow("Webcam", frame_to_show)
+                    #cv2.imshow("Webcam", frame_to_show)
                     if cv2.waitKey(1) & 0xFF == ord("q"):
                         break
 
