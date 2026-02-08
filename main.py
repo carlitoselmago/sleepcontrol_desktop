@@ -217,7 +217,7 @@ def main(page: ft.Page):
         while True:
             msg = log_queue.get()
             log_view.value += msg + "\n"
-            log_view.scroll_to_end()
+            #log_view.scroll_to_end()
             page.update()
 
     threading.Thread(target=log_pump, daemon=True).start()
@@ -244,4 +244,5 @@ def main(page: ft.Page):
 # 🚀 ENTRY POINT
 # ---------------------------------
 if __name__ == "__main__":
-    ft.run(main)
+    #ft.run(main)
+    ft.app(main)

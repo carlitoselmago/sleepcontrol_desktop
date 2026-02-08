@@ -27,3 +27,9 @@ Then run this to update the icon (linux only)
 ```
 sudo update-icon-caches /usr/share/icons/*
 ```
+
+
+
+### models
+place this on /data
+https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task
